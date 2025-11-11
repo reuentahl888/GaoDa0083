@@ -112,7 +112,7 @@ jobs:
         run: |
           echo "🔧 $(date '+%Y-%m-%d %H:%M:%S') - 开始轻量级优化..."
           
-          # 方法1: 仅使用 terser 进行基本压缩（最小化CPU开销）
+          # 方法1: 仅使用 terser 进行基本压缩
           echo "🛠️ 使用 terser 进行基本压缩..."
           terser /tmp/remote_worker.js \
             --compress defaults=false,unused=true,dead_code=true \
@@ -128,26 +128,24 @@ jobs:
             if [[ $SIZE_1 -gt 300000 ]]; then
               echo "⚡ 文件较大，进行额外优化..."
               
-              # 创建简化版本，移除可能引起CPU超限的复杂结构
-              node << 'EOF'
+              # 使用独立的 Node.js 脚本进行简化
+              node -e "
               const fs = require('fs');
               const code = fs.readFileSync('/tmp/remote_worker.js', 'utf8');
               
               // 移除注释
-              let simplified = code.replace(/\/\*[\s\S]*?\*\//g, '');
-              simplified = simplified.replace(/\/\/.*$/gm, '');
+              let simplified = code.replace(/\\/\\*[\\s\\S]*?\\*\\//g, '');
+              simplified = simplified.replace(/\\/\\/.*\$/gm, '');
               
               // 移除空行和多余空格
-              simplified = simplified.split('\n')
+              simplified = simplified.split('\\n')
                 .filter(line => line.trim().length > 0)
                 .map(line => line.trim())
-                .join('\n');
-              
-              // 移除复杂的立即执行函数表达式
-              simplified = simplified.replace(/\(\s*function\s*\([^)]*\)\s*\{[\s\S]*?\}\s*\(\s*[^)]*\s*\)\s*\);?/g, '');
+                .join('\\n');
               
               fs.writeFileSync('_worker.js', simplified);
-              EOF
+              console.log('简化完成');
+              "
               
               SIZE_2=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
               echo "📏 简化后大小: $SIZE_2 字节"
@@ -173,7 +171,7 @@ jobs:
       - name: 🔍 代码复杂度检查
         if: env.UPDATE_NEEDED == 'true'
         run: |
-          echo "🔍 $(date '+%m-%d %H:%M:%S') - 检查代码复杂度..."
+          echo "🔍 $(date '+%Y-%m-%d %H:%M:%S') - 检查代码复杂度..."
           
           if [[ -f "_worker.js" ]]; then
             # 检查可能引起CPU超限的模式
