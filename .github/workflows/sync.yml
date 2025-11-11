@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: write
-  actions: write  # 需要这个权限来删除工作流运行记录
 
 jobs:
   update:
@@ -108,48 +107,33 @@ jobs:
           cp /tmp/remote_worker.js source.js
           echo "✅ source.js 保存成功"
 
-      - name: 🔧 轻量级优化（避免CPU超限）
+      - name: 🔧 代码压缩和优化
         if: env.UPDATE_NEEDED == 'true'
         run: |
-          echo "🔧 $(date '+%Y-%m-%d %H:%M:%S') - 开始轻量级优化..."
+          echo "🔧 $(date '+%Y-%m-%d %H:%M:%S') - 开始代码压缩..."
           
-          # 方法1: 仅使用 terser 进行基本压缩
-          echo "🛠️ 使用 terser 进行基本压缩..."
+          # 方法1: 使用 terser 进行压缩
+          echo "🛠️ 使用 terser 压缩..."
           terser /tmp/remote_worker.js \
-            --compress defaults=false,unused=true,dead_code=true \
-            --mangle toplevel=false \
+            --compress \
+            --mangle \
             --output _worker.js
           
-          # 检查压缩后文件
+          # 检查压缩后文件大小
           if [[ -f "_worker.js" ]]; then
-            SIZE_1=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
-            echo "📏 基本压缩后大小: $SIZE_1 字节"
+            COMPRESSED_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
+            echo "📏 压缩后大小: $COMPRESSED_SIZE 字节"
             
-            # 如果文件仍然复杂，尝试进一步简化
-            if [[ $SIZE_1 -gt 300000 ]]; then
-              echo "⚡ 文件较大，进行额外优化..."
+            # 如果文件仍然很大，使用更激进的压缩
+            if [[ $COMPRESSED_SIZE -gt 500000 ]]; then
+              echo "⚠️ 文件仍然较大，使用激进压缩..."
+              terser /tmp/remote_worker.js \
+                --compress passes=3,unsafe=true,unsafe_math=true,unsafe_methods=true \
+                --mangle toplevel=true \
+                --output _worker.js
               
-              # 使用独立的 Node.js 脚本进行简化
-              node -e "
-              const fs = require('fs');
-              const code = fs.readFileSync('/tmp/remote_worker.js', 'utf8');
-              
-              # 移除注释
-              let simplified = code.replace(/\\/\\*[\\s\\S]*?\\*\\//g, '');
-              simplified = simplified.replace(/\\/\\/.*\$/gm, '');
-              
-              # 移除空行和多余空格
-              simplified = simplified.split('\\n')
-                .filter(line => line.trim().length > 0)
-                .map(line => line.trim())
-                .join('\\n');
-              
-              fs.writeFileSync('_worker.js', simplified);
-              console.log('简化完成');
-              "
-              
-              SIZE_2=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
-              echo "📏 简化后大小: $SIZE_2 字节"
+              COMPRESSED_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
+              echo "📏 激进压缩后大小: $COMPRESSED_SIZE 字节"
             fi
           else
             echo "❌ 压缩失败，使用原始文件"
@@ -159,39 +143,15 @@ jobs:
           # 最终验证
           FINAL_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
           ORIGINAL_SIZE=$(stat -c%s source.js 2>/dev/null || stat -f%z source.js 2>/dev/null)
+          COMPRESSION_RATIO=$(( (FINAL_SIZE * 100) / ORIGINAL_SIZE ))
           
-          echo "📊 优化报告:"
+          echo "📊 压缩报告:"
           echo "   • 原始大小: $ORIGINAL_SIZE 字节"
-          echo "   • 优化后大小: $FINAL_SIZE 字节"
-          echo "   • 优化比例: $(( (FINAL_SIZE * 100) / ORIGINAL_SIZE ))%"
+          echo "   • 压缩后大小: $FINAL_SIZE 字节"
+          echo "   • 压缩比例: $COMPRESSION_RATIO%"
           
-          if [[ $FINAL_SIZE -gt 500000 ]]; then
-            echo "⚠️ 警告：文件仍然较大，建议手动优化代码结构"
-          fi
-
-      - name: 🔍 代码复杂度检查
-        if: env.UPDATE_NEEDED == 'true'
-        run: |
-          echo "🔍 $(date '+%Y-%m-%d %H:%M:%S') - 检查代码复杂度..."
-          
-          if [[ -f "_worker.js" ]]; then
-            # 检查可能引起CPU超限的模式
-            COMPLEX_PATTERNS=0
-            COMPLEX_PATTERNS=$((COMPLEX_PATTERNS + $(grep -c "eval(" _worker.js || true)))
-            COMPLEX_PATTERNS=$((COMPLEX_PATTERNS + $(grep -c "setInterval" _worker.js || true)))
-            COMPLEX_PATTERNS=$((COMPLEX_PATTERNS + $(grep -c "setTimeout" _worker.js || true)))
-            COMPLEX_PATTERNS=$((COMPLEX_PATTERNS + $(grep -c "Function(" _worker.js || true)))
-            COMPLEX_PATTERNS=$((COMPLEX_PATTERNS + $(grep -c "while.*true" _worker.js || true)))
-            
-            echo "📋 复杂度检查:"
-            echo "   • 发现 $COMPLEX_PATTERNS 个可能引起CPU超限的模式"
-            
-            if [[ $COMPLEX_PATTERNS -gt 5 ]]; then
-              echo "❌ 警告：代码包含多个可能引起CPU超限的模式"
-              echo "::warning title=CPU超限风险::代码包含 $COMPLEX_PATTERNS 个高风险模式"
-            else
-              echo "✅ 代码复杂度在可接受范围内"
-            fi
+          if [[ $FINAL_SIZE -gt 1048576 ]]; then
+            echo "⚠️ 警告：文件超过 1MB，可能影响部署"
           fi
 
       - name: 📝 提交更改
@@ -211,21 +171,16 @@ jobs:
             exit 0
           fi
           
-          # 获取文件大小信息
-          SOURCE_SIZE=$(stat -c%s source.js 2>/dev/null || stat -f%z source.js 2>/dev/null)
-          WORKER_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
-          
           # 提交
-          git commit -m "🔄 Auto Update Worker - CPU Optimized
+          git commit -m "🔄 Auto Update Worker
 
           • 同步最新 Worker 文件
           • 版本: ${REMOTE_VERSION:0:16}...
-          • 源文件: $SOURCE_SIZE 字节
-          • 优化后: $WORKER_SIZE 字节
-          • 针对CPU时间限制优化
+          • 原始大小: $(stat -c%s source.js 2>/dev/null || stat -f%z source.js 2>/dev/null) 字节
+          • 压缩后大小: $(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null) 字节
           • 更新时间: $(date '+%Y-%m-%d %H:%M:%S')
           
-          [自动同步和优化]"
+          [自动同步]"
           
           git push
           echo "✅ 提交完成"
@@ -234,7 +189,7 @@ jobs:
         if: env.UPDATE_NEEDED == 'true'
         run: |
           echo "🎉 $(date '+%Y-%m-%d %H:%M:%S') - 自动更新完成！"
-          echo "::notice title=更新完成::已成功优化代码以避免CPU超限"
+          echo "::notice title=更新完成::已成功同步并压缩代码"
 
       - name: 😴 无需更新
         if: env.UPDATE_NEEDED == 'false'
@@ -242,16 +197,25 @@ jobs:
           echo "😴 $(date '+%Y-%m-%d %H:%M:%S') - 当前已是最新版本，无需更新"
 
   cleanup:
-    name: 🧹 清理旧工作流运行记录
-    needs: update
+    name: 🧹 清理工作流记录
     runs-on: ubuntu-latest
-    if: always()  # 即使主任务失败也执行清理
+    needs: update
+    permissions:
+      actions: write
+      contents: read
+    if: always()  # 无论更新job成功与否都运行清理
+    
     steps:
-      - name: 🧹 清理工作流运行记录（保留最近3条）
+      - name: 🗑️ 删除旧工作流运行记录
         uses: Mattraks/delete-workflow-runs@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
           retain_days: 0
           keep_minimum_runs: 3
-          skip_workflows: "cleanup"  # 跳过清理工作流自身，避免被删除
+          keep_minimum_runs_per_workflow: 2
+
+      - name: 📊 清理完成通知
+        run: |
+          echo "🧹 工作流清理完成"
+          echo "::notice title=清理完成::已清理旧工作流运行记录，保留最近3次运行"
