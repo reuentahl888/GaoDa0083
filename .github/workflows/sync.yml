@@ -127,31 +127,35 @@ jobs:
             exit 1
           fi
           
-          # 使用 javascript-obfuscator 进行代码混淆
+          # 创建混淆配置文件
+          cat > obfuscator-config.json << EOF
+          {
+            "compact": true,
+            "controlFlowFlattening": true,
+            "controlFlowFlatteningThreshold": 0.75,
+            "deadCodeInjection": true,
+            "deadCodeInjectionThreshold": 0.4,
+            "debugProtection": true,
+            "debugProtectionInterval": 1000,
+            "disableConsoleOutput": true,
+            "identifierNamesGenerator": "hexadecimal",
+            "log": false,
+            "numbersToExpressions": true,
+            "renameGlobals": true,
+            "selfDefending": true,
+            "simplify": true,
+            "splitStrings": true,
+            "splitStringsChunkLength": 10,
+            "stringArray": true,
+            "stringArrayEncoding": ["base64"],
+            "stringArrayThreshold": 0.75,
+            "transformObjectKeys": true,
+            "unicodeEscapeSequence": false
+          }
+          EOF
+          
           echo "🛠️ 使用 javascript-obfuscator 进行混淆..."
-          javascript-obfuscator _worker.js --output _worker.js \
-            --compact true \
-            --control-flow-flattening true \
-            --control-flow-flattening-threshold 0.75 \
-            --dead-code-injection true \
-            --dead-code-injection-threshold 0.4 \
-            --debug-protection true \
-            --debug-protection-interval true \
-            --disable-console-output true \
-            --identifier-names-generator hexadecimal \
-            --log false \
-            --numbers-to-expressions true \
-            --rename-globals true \
-            --rotate-string-array true \
-            --self-defending true \
-            --shuffle-string-array true \
-            --split-strings true \
-            --split-strings-chunk-length 10 \
-            --string-array true \
-            --string-array-encoding rc4 \
-            --string-array-threshold 0.75 \
-            --transform-object-keys true \
-            --unicode-escape-sequence false
+          javascript-obfuscator _worker.js --output _worker.js --config obfuscator-config.json
           
           # 验证混淆后的文件
           if [[ -f "_worker.js" ]]; then
@@ -162,6 +166,9 @@ jobs:
             echo "❌ 混淆失败，输出文件不存在"
             exit 1
           fi
+          
+          # 清理配置文件
+          rm -f obfuscator-config.json
           
           # 记录新版本
           echo "$REMOTE_VERSION" > version.txt
