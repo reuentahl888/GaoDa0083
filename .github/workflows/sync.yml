@@ -1,38 +1,226 @@
 name: 🔄 Auto Update Worker
 
 on:
+  push:
+    branches: [ main ]
   schedule:
-    - cron: "0 1 * * *"
-  workflow_dispatch:
+    - cron: "0 1 * * *"  # 🕐 每天凌晨1点自动运行
+  workflow_dispatch:      # 🖐️ 支持手动触发
 
 permissions:
   contents: write
 
 jobs:
   update:
+    name: 🚀 同步和混淆 Worker 文件
     runs-on: ubuntu-latest
     steps:
-      - name: 📥 检出代码
+      - name: 📥 初始化代码仓库
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
 
-      - name: 🔧 配置 Git
+      - name: 🔧 配置 Git 和安装依赖
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global pull.rebase false
+          
+          # 安装 Node.js 和 JavaScript 混淆工具
+          echo "📦 安装 JavaScript 混淆工具..."
+          npm install -g javascript-obfuscator
 
-      - name: ⬇️ 下载最新文件
+      - name: 🔍 检查本地版本
+        id: local_version
         run: |
-          curl -s -o _worker.js "https://raw.githubusercontent.com/cmliu/edgetunnel/refs/heads/main/_worker.js"
-          curl -s "https://raw.githubusercontent.com/cmliu/edgetunnel/refs/heads/main/_worker.js" | sha256sum | cut -d' ' -f1 > version.txt
+          echo "📦 $(date '+%Y-%m-%d %H:%M:%S') - 开始检查本地版本..."
+          if [[ -f "version.txt" ]]; then
+            LOCAL_VERSION=$(cat version.txt)
+            echo "✅ 当前本地版本: $LOCAL_VERSION"
+          else
+            echo "🆕 首次运行，未找到版本记录"
+            LOCAL_VERSION="initial"
+          fi
+          echo "LOCAL_VERSION=$LOCAL_VERSION" >> $GITHUB_ENV
+          echo "::notice title=版本信息::本地版本: $LOCAL_VERSION"
 
-      - name: 💾 提交更新
+      - name: 🌐 获取远程版本
+        id: remote_version
         run: |
-          git add -A
-          if git diff --staged --quiet; then
-            echo "没有更改可提交"
+          echo "🌍 $(date '+%Y-%m-%d %H:%M:%S') - 正在获取远程文件..."
+          RAW_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/refs/heads/main/_worker.js"
+          
+          # 尝试下载文件并计算哈希
+          for i in {1..3}; do
+            echo "🔁 第 $i 次尝试下载..."
+            if FILE_CONTENT=$(curl -f -s "$RAW_URL"); then
+              FILE_HASH=$(echo "$FILE_CONTENT" | sha256sum | cut -d' ' -f1)
+              if [[ -n "$FILE_HASH" ]]; then
+                echo "✅ 远程文件哈希获取成功: ${FILE_HASH:0:16}..."
+                echo "REMOTE_VERSION=$FILE_HASH" >> $GITHUB_ENV
+                echo "::notice title=远程版本::文件哈希: ${FILE_HASH:0:16}..."
+                break
+              fi
+            fi
+            
+            if [[ $i -eq 3 ]]; then
+              echo "❌ 下载失败，已达到最大重试次数"
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: 📊 版本比对
+        id: version_check
+        run: |
+          echo "📊 $(date '+%Y-%m-%d %H:%M:%S') - 开始版本比对..."
+          echo "📍 本地版本: ${LOCAL_VERSION:0:16}..."
+          echo "📍 远程版本: ${REMOTE_VERSION:0:16}..."
+          
+          if [[ "$LOCAL_VERSION" == "$REMOTE_VERSION" ]]; then
+            echo "🎉 版本一致，无需更新"
+            echo "UPDATE_NEEDED=false" >> $GITHUB_ENV
+            echo "::notice title=版本状态::当前已是最新版本"
+          else
+            echo "🔄 检测到新版本，需要更新"
+            echo "UPDATE_NEEDED=true" >> $GITHUB_ENV
+            echo "::warning title=版本更新::发现新版本，准备更新"
+          fi
+
+      - name: ⬇️ 下载和处理文件
+        if: env.UPDATE_NEEDED == 'true'
+        run: |
+          echo "⬇️ $(date '+%Y-%m-%d %H:%M:%S') - 开始下载和处理文件..."
+          RAW_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/refs/heads/main/_worker.js"
+          
+          # 下载原始文件并保存为 source.js
+          echo "📥 下载原始文件保存为 source.js..."
+          if curl -f -s -o source.js "$RAW_URL"; then
+            echo "✅ source.js 下载成功"
+          else
+            echo "❌ source.js 下载失败"
+            exit 1
+          fi
+          
+          # 同样下载一份用于混淆
+          echo "📥 下载文件用于混淆..."
+          curl -f -s -o _worker.js "$RAW_URL"
+          
+          # 验证文件大小
+          FILE_SIZE=$(stat -c%s source.js 2>/dev/null || stat -f%z source.js 2>/dev/null)
+          if [[ $FILE_SIZE -gt 1000 ]]; then
+            echo "📏 源文件大小: $FILE_SIZE 字节"
+          else
+            echo "❌ 文件大小异常，可能下载失败"
+            exit 1
+          fi
+
+      - name: 🔒 代码混淆
+        if: env.UPDATE_NEEDED == 'true'
+        run: |
+          echo "🔒 $(date '+%Y-%m-%d %H:%M:%S') - 开始代码混淆..."
+          
+          # 检查 _worker.js 文件是否存在
+          if [[ ! -f "_worker.js" ]]; then
+            echo "❌ _worker.js 文件不存在"
+            exit 1
+          fi
+          
+          # 使用 javascript-obfuscator 进行代码混淆
+          echo "🛠️ 使用 javascript-obfuscator 进行混淆..."
+          javascript-obfuscator _worker.js --output _worker.js \
+            --compact true \
+            --control-flow-flattening true \
+            --control-flow-flattening-threshold 0.75 \
+            --dead-code-injection true \
+            --dead-code-injection-threshold 0.4 \
+            --debug-protection true \
+            --debug-protection-interval true \
+            --disable-console-output true \
+            --identifier-names-generator hexadecimal \
+            --log false \
+            --numbers-to-expressions true \
+            --rename-globals true \
+            --rotate-string-array true \
+            --self-defending true \
+            --shuffle-string-array true \
+            --split-strings true \
+            --split-strings-chunk-length 10 \
+            --string-array true \
+            --string-array-encoding rc4 \
+            --string-array-threshold 0.75 \
+            --transform-object-keys true \
+            --unicode-escape-sequence false
+          
+          # 验证混淆后的文件
+          if [[ -f "_worker.js" ]]; then
+            OBFUSCATED_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
+            echo "✅ 混淆完成，文件大小: $OBFUSCATED_SIZE 字节"
+            echo "::notice title=混淆完成::已生成混淆代码 ($OBFUSCATED_SIZE 字节)"
+          else
+            echo "❌ 混淆失败，输出文件不存在"
+            exit 1
+          fi
+          
+          # 记录新版本
+          echo "$REMOTE_VERSION" > version.txt
+          echo "📝 版本记录已更新"
+
+      - name: 📝 提交更改
+        if: env.UPDATE_NEEDED == 'true'
+        run: |
+          echo "📝 $(date '+%Y-%m-%d %H:%M:%S') - 准备提交更改..."
+          
+          # 检查是否有更改
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "ℹ️ 没有检测到更改，跳过提交"
             exit 0
           fi
-          git commit -m "🔄 自动更新 Worker 文件"
+          
+          # 显示文件状态
+          echo "📁 文件状态:"
+          git status --short
+          
+          # 添加所有更改
+          git add -A
+          
+          # 提交更改
+          git commit -m "🔄 Auto Update Worker with Obfuscation
+
+          • 下载原始文件保存为 source.js
+          • 生成混淆后的 _worker.js
+          • 源文件版本哈希: ${{ env.REMOTE_VERSION }}
+          • 混淆时间: $(date '+%Y-%m-%d %H:%M:%S')
+          
+          📁 包含文件:
+          - source.js (原始文件)
+          - _worker.js (混淆后文件)
+          - version.txt (版本记录)
+          
+          [自动同步和混淆]"
+          
+          # 推送更改
+          echo "🚀 推送更改到远程仓库..."
           git push
+          echo "✅ 提交和推送完成"
+
+      - name: 🎉 更新完成
+        if: env.UPDATE_NEEDED == 'true'
+        run: |
+          echo "🎉 $(date '+%Y-%m-%d %H:%M:%S') - 自动更新和混淆完成！"
+          echo "::notice title=更新完成::已成功同步并混淆代码"
+          echo "📋 更新摘要:"
+          echo "   • 源文件版本: ${REMOTE_VERSION:0:16}..."
+          SOURCE_SIZE=$(stat -c%s source.js 2>/dev/null || stat -f%z source.js 2>/dev/null)
+          OBFUSCATED_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
+          echo "   • source.js 大小: $SOURCE_SIZE 字节"
+          echo "   • _worker.js 大小: $OBFUSCATED_SIZE 字节"
+          echo "   • 混淆比例: $(( (OBFUSCATED_SIZE * 100) / SOURCE_SIZE ))%"
+          echo "   • 处理时间: $(date '+%Y-%m-%d %H:%M:%S')"
+
+      - name: 😴 无需更新
+        if: env.UPDATE_NEEDED == 'false'
+        run: |
+          echo "😴 $(date '+%Y-%m-%d %H:%M:%S') - 当前已是最新版本，无需更新"
+          echo "::notice title=状态检查::当前已是最新版本"
