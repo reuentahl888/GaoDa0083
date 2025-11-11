@@ -57,7 +57,7 @@ jobs:
         if: env.UPDATE_NEEDED == 'true'
         run: |
           echo -e "\033[34m[下载最新 _worker.js]\033[0m"
-          RAW_URL="https://raw.githubusercontent.com/Setout8/Book-Pen-Book/main/_worker.js"
+          RAW_URL="https://raw.githubusercontent.com/cmliu/edgetunnel/refs/heads/beta2.0/_worker.js"
           curl -s -o _worker.js "$RAW_URL"
           
           echo -e "\033[34m[记录新版本号]\033[0m"
