@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   update:
-    name: 🚀 同步和混淆 Worker 文件
+    name: 🚀 同步和优化 Worker 文件
     runs-on: ubuntu-latest
     steps:
       - name: 📥 初始化代码仓库
@@ -29,7 +29,7 @@ jobs:
           
           # 安装必要的工具
           echo "📦 安装代码处理工具..."
-          npm install -g javascript-obfuscator terser
+          npm install -g terser
 
       - name: 🔍 检查文件状态
         id: check_files
@@ -107,67 +107,159 @@ jobs:
           cp /tmp/remote_worker.js source.js
           echo "✅ source.js 保存成功"
 
-      - name: 🔒 使用推荐配置进行混淆
+      - name: 🔒 字符串混淆和优化
         if: env.UPDATE_NEEDED == 'true'
         run: |
-          echo "🔒 $(date '+%Y-%m-%d %H:%M:%S') - 开始代码混淆..."
+          echo "🔒 $(date '+%Y-%m-%d %H:%M:%S') - 开始字符串混淆和优化..."
           
-          # 创建推荐的混淆配置
-          cat > obfuscator-config.json << 'EOF'
-          {
-            "compact": true,
-            "controlFlowFlattening": false,
-            "deadCodeInjection": false,
-            "debugProtection": false,
-            "identifierNamesGenerator": "mangled",
-            "numbersToExpressions": false,
-            "renameGlobals": false,
-            "selfDefending": true,
-            "simplify": true,
-            "splitStrings": false,
-            "stringArray": true,
-            "stringArrayEncoding": [],
-            "stringArrayThreshold": 0.75,
-            "unicodeEscapeSequence": false
+          # 创建字符串混淆处理脚本
+          cat > string-obfuscator.js << 'EOF'
+          const fs = require('fs');
+          
+          function obfuscateStrings(code) {
+            // 匹配字符串常量（单引号、双引号、模板字符串）
+            const stringRegex = /(['"`])(?:(?=(\\?))\2.)*?\1/g;
+            const strings = [];
+            let obfuscatedCode = code;
+            
+            // 第一步：收集所有字符串并替换为占位符
+            obfuscatedCode = obfuscatedCode.replace(stringRegex, (match) => {
+              // 跳过太短的字符串和可能是正则表达式的情况
+              if (match.length <= 2) return match;
+              
+              const index = strings.length;
+              strings.push(match);
+              return `__STR_${index}__`;
+            });
+            
+            // 第二步：添加解码函数和字符串数组
+            const decodeFunction = `
+            const __decode=(s)=>s.replace(/__STR_(\\d+)__/g,(m,n)=>[${strings.map(s => 
+              // 对字符串进行简单编码：Base64 或字符编码
+              Buffer.from(s).toString('base64')
+            ).join(',')}][n]?atob([${strings.map(s => 
+              Buffer.from(s).toString('base64')
+            ).join(',')}][n]):m);
+            `;
+            
+            // 第三步：包装代码
+            obfuscatedCode = decodeFunction + '\n__decode(`' + obfuscatedCode.replace(/`/g, '\\`') + '`);';
+            
+            return obfuscatedCode;
           }
+          
+          function simpleStringObfuscation(code) {
+            // 简化的字符串混淆 - 只处理较长的字符串
+            return code.replace(/['"`]([^'"`]{10,})['"`]/g, (match, content) => {
+              // 将字符串转换为字符编码数组
+              const charCodes = Array.from(content).map(c => c.charCodeAt(0));
+              return `String.fromCharCode(${charCodes.join(',')})`;
+            });
+          }
+          
+          function base64Obfuscation(code) {
+            // 使用 Base64 编码字符串
+            return code.replace(/['"`]([^'"`]{4,})['"`]/g, (match, content) => {
+              try {
+                const base64 = Buffer.from(content).toString('base64');
+                return `atob('${base64}')`;
+              } catch (e) {
+                return match; // 编码失败则保持原样
+              }
+            });
+          }
+          
+          // 读取源文件
+          const sourceCode = fs.readFileSync('/tmp/remote_worker.js', 'utf8');
+          
+          let obfuscatedCode = sourceCode;
+          
+          // 应用基础混淆
+          console.log('🔧 应用基础字符串混淆...');
+          obfuscatedCode = simpleStringObfuscation(obfuscatedCode);
+          
+          // 应用 Base64 混淆（对较长的字符串）
+          console.log('🔧 应用 Base64 混淆...');
+          obfuscatedCode = base64Obfuscation(obfuscatedCode);
+          
+          // 使用 terser 压缩
+          const { execSync } = require('child_process');
+          fs.writeFileSync('/tmp/obfuscated.js', obfuscatedCode);
+          execSync('terser /tmp/obfuscated.js --compress --mangle --output _worker.js');
+          
+          console.log('✅ 字符串混淆完成');
           EOF
           
-          echo "🛠️ 使用推荐配置进行混淆..."
-          javascript-obfuscator /tmp/remote_worker.js --output _worker.js --config obfuscator-config.json
+          # 运行字符串混淆
+          echo "🛠️ 运行字符串混淆..."
+          node string-obfuscator.js
           
-          # 检查混淆后文件大小
+          # 清理临时文件
+          rm -f string-obfuscator.js /tmp/obfuscated.js
+          
+          # 验证结果
           if [[ -f "_worker.js" ]]; then
-            OBFUSCATED_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
+            FINAL_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
             ORIGINAL_SIZE=$(stat -c%s source.js 2>/dev/null || stat -f%z source.js 2>/dev/null)
             
             echo "📊 混淆报告:"
             echo "   • 原始大小: $ORIGINAL_SIZE 字节"
-            echo "   • 混淆后大小: $OBFUSCATED_SIZE 字节"
-            echo "   • 大小变化: $(( (OBFUSCATED_SIZE * 100) / ORIGINAL_SIZE ))%"
+            echo "   • 混淆后大小: $FINAL_SIZE 字节"
+            echo "   • 大小变化: $(( (FINAL_SIZE * 100) / ORIGINAL_SIZE ))%"
             
-            # 如果混淆后文件太大，使用 terser 压缩
-            if [[ $OBFUSCATED_SIZE -gt 500000 ]]; then
-              echo "⚠️ 混淆后文件较大，使用 terser 进一步压缩..."
-              terser _worker.js --compress --mangle --output _worker.js
-              
-              COMPRESSED_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
-              echo "✅ 二次压缩后大小: $COMPRESSED_SIZE 字节"
-            fi
+            # 检查混淆效果
+            STRING_COUNT=$(grep -o "fromCharCode\\|atob" _worker.js | wc -l || true)
+            echo "   • 混淆的字符串数量: $STRING_COUNT"
           else
             echo "❌ 混淆失败，使用原始文件"
             cp /tmp/remote_worker.js _worker.js
           fi
+
+      - name: 🔧 额外优化（如果需要）
+        if: env.UPDATE_NEEDED == 'true'
+        run: |
+          echo "🔧 $(date '+%Y-%m-%d %H:%M:%S') - 检查是否需要额外优化..."
           
-          # 清理配置文件
-          rm -f obfuscator-config.json
+          CURRENT_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
           
-          # 最终大小检查
-          FINAL_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
-          if [[ $FINAL_SIZE -gt 1048576 ]]; then
-            echo "⚠️ 警告：最终文件超过 1MB，可能影响 Cloudflare Worker 部署"
-            echo "::warning title=文件大小警告::最终文件大小: $FINAL_SIZE 字节"
-          else
-            echo "✅ 文件大小在安全范围内"
+          if [[ $CURRENT_SIZE -gt 400000 ]]; then
+            echo "⚡ 文件较大，进行额外压缩..."
+            terser _worker.js \
+              --compress passes=2 \
+              --mangle \
+              --output _worker.js
+            
+            FINAL_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
+            echo "✅ 额外压缩后大小: $FINAL_SIZE 字节"
+          fi
+
+      - name: 🔍 代码安全检查
+        if: env.UPDATE_NEEDED == 'true'
+        run: |
+          echo "🔍 $(date '+%Y-%m-%d %H:%M:%S') - 代码安全检查..."
+          
+          if [[ -f "_worker.js" ]]; then
+            # 检查关键功能是否完整
+            ESSENTIAL_FUNCTIONS=0
+            ESSENTIAL_FUNCTIONS=$((ESSENTIAL_FUNCTIONS + $(grep -c "addEventListener" _worker.js || true)))
+            ESSENTIAL_FUNCTORS=$((ESSENTIAL_FUNCTIONS + $(grep -c "fetch" _worker.js || true)))
+            ESSENTIAL_FUNCTIONS=$((ESSENTIAL_FUNCTIONS + $(grep -c "Response" _worker.js || true)))
+            
+            echo "📋 功能完整性检查:"
+            echo "   • 发现 $ESSENTIAL_FUNCTIONS 个关键函数"
+            
+            if [[ $ESSENTIAL_FUNCTIONS -eq 0 ]]; then
+              echo "❌ 警告：可能丢失关键功能"
+              echo "::warning title=功能完整性::请检查混淆后的代码功能"
+            else
+              echo "✅ 关键功能完整"
+            fi
+            
+            # 检查文件大小限制
+            FINAL_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
+            if [[ $FINAL_SIZE -gt 1048576 ]]; then
+              echo "⚠️ 警告：文件超过 1MB，可能影响部署"
+            fi
           fi
 
       - name: 📝 提交更改
@@ -192,16 +284,16 @@ jobs:
           WORKER_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
           
           # 提交
-          git commit -m "🔄 Auto Update Worker with Obfuscation
+          git commit -m "🔄 Auto Update Worker - String Obfuscation
 
           • 同步最新 Worker 文件
           • 版本: ${REMOTE_VERSION:0:16}...
           • 源文件: $SOURCE_SIZE 字节
           • 混淆后: $WORKER_SIZE 字节
-          • 使用推荐混淆配置
+          • 应用字符串混淆技术
           • 更新时间: $(date '+%Y-%m-%d %H:%M:%S')
           
-          [自动同步和混淆]"
+          [自动同步和字符串混淆]"
           
           git push
           echo "✅ 提交完成"
@@ -210,11 +302,7 @@ jobs:
         if: env.UPDATE_NEEDED == 'true'
         run: |
           echo "🎉 $(date '+%Y-%m-%d %H:%M:%S') - 自动更新完成！"
-          echo "::notice title=更新完成::已成功同步并混淆代码"
-          echo "📋 最终报告:"
-          echo "   • 源文件大小: $(stat -c%s source.js 2>/dev/null || stat -f%z source.js 2>/dev/null) 字节"
-          echo "   • 混淆文件大小: $(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null) 字节"
-          echo "   • 版本哈希: ${REMOTE_VERSION:0:16}..."
+          echo "::notice title=更新完成::已成功应用字符串混淆"
 
       - name: 😴 无需更新
         if: env.UPDATE_NEEDED == 'false'
