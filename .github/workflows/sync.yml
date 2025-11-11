@@ -9,61 +9,12 @@ on:
 
 permissions:
   contents: write
-
-# 限制工作流日志保留数量
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
-
-env:
-  WORKFLOW_RETENTION_DAYS: 3
+  actions: write  # 需要这个权限来删除工作流运行记录
 
 jobs:
-  cleanup-old-workflows:
-    name: 🧹 清理旧工作流日志
-    runs-on: ubuntu-latest
-    steps:
-      - name: 🔍 列出工作流运行
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const { data: runs } = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: context.workflow,
-              per_page: 100
-            });
-            
-            // 按创建时间排序，最新的在前面
-            const sortedRuns = runs.workflow_runs.sort((a, b) => 
-              new Date(b.created_at) - new Date(a.created_at)
-            );
-            
-            // 保留最新的3个运行
-            const runsToDelete = sortedRuns.slice(3);
-            
-            console.log(`找到 ${sortedRuns.length} 个工作流运行`);
-            console.log(`将保留最新的 3 个，删除 ${runsToDelete.length} 个旧运行`);
-            
-            // 删除旧的运行
-            for (const run of runsToDelete) {
-              console.log(`删除运行 #${run.id} (${run.status}, ${run.conclusion}) - 创建于 ${run.created_at}`);
-              try {
-                await github.rest.actions.deleteWorkflowRun({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  run_id: run.id
-                });
-                console.log(`✅ 成功删除运行 #${run.id}`);
-              } catch (error) {
-                console.log(`❌ 删除运行 #${run.id} 失败: ${error.message}`);
-              }
-            }
-
   update:
     name: 🚀 同步和优化 Worker 文件
     runs-on: ubuntu-latest
-    needs: cleanup-old-workflows
     steps:
       - name: 📥 初始化代码仓库
         uses: actions/checkout@v4
@@ -183,11 +134,11 @@ jobs:
               const fs = require('fs');
               const code = fs.readFileSync('/tmp/remote_worker.js', 'utf8');
               
-              // 移除注释
+              # 移除注释
               let simplified = code.replace(/\\/\\*[\\s\\S]*?\\*\\//g, '');
               simplified = simplified.replace(/\\/\\/.*\$/gm, '');
               
-              // 移除空行和多余空格
+              # 移除空行和多余空格
               simplified = simplified.split('\\n')
                 .filter(line => line.trim().length > 0)
                 .map(line => line.trim())
@@ -289,3 +240,18 @@ jobs:
         if: env.UPDATE_NEEDED == 'false'
         run: |
           echo "😴 $(date '+%Y-%m-%d %H:%M:%S') - 当前已是最新版本，无需更新"
+
+  cleanup:
+    name: 🧹 清理旧工作流运行记录
+    needs: update
+    runs-on: ubuntu-latest
+    if: always()  # 即使主任务失败也执行清理
+    steps:
+      - name: 🧹 清理工作流运行记录（保留最近3条）
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          retain_days: 0
+          keep_minimum_runs: 3
+          skip_workflows: "cleanup"  # 跳过清理工作流自身，避免被删除
