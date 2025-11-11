@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   update:
-    name: 🚀 同步和混淆 Worker 文件
+    name: 🚀 同步和优化 Worker 文件
     runs-on: ubuntu-latest
     steps:
       - name: 📥 初始化代码仓库
@@ -103,8 +103,8 @@ jobs:
             exit 1
           fi
           
-          # 同样下载一份用于混淆
-          echo "📥 下载文件用于混淆..."
+          # 同样下载一份用于处理
+          echo "📥 下载文件用于处理..."
           curl -f -s -o _worker.js "$RAW_URL"
           
           # 验证文件大小
@@ -116,10 +116,10 @@ jobs:
             exit 1
           fi
 
-      - name: 🔒 代码混淆
+      - name: 🔒 优化和压缩代码
         if: env.UPDATE_NEEDED == 'true'
         run: |
-          echo "🔒 $(date '+%Y-%m-%d %H:%M:%S') - 开始代码混淆..."
+          echo "🔒 $(date '+%Y-%m-%d %H:%M:%S') - 开始优化代码..."
           
           # 检查 _worker.js 文件是否存在
           if [[ ! -f "_worker.js" ]]; then
@@ -127,44 +127,67 @@ jobs:
             exit 1
           fi
           
-          # 创建混淆配置文件
+          # 创建轻量级混淆配置（避免内存超限）
           cat > obfuscator-config.json << EOF
           {
             "compact": true,
-            "controlFlowFlattening": true,
-            "controlFlowFlatteningThreshold": 0.75,
-            "deadCodeInjection": true,
-            "deadCodeInjectionThreshold": 0.4,
-            "debugProtection": true,
-            "debugProtectionInterval": 1000,
-            "disableConsoleOutput": true,
-            "identifierNamesGenerator": "hexadecimal",
+            "controlFlowFlattening": false,
+            "deadCodeInjection": false,
+            "debugProtection": false,
+            "disableConsoleOutput": false,
+            "identifierNamesGenerator": "mangled",
             "log": false,
-            "numbersToExpressions": true,
-            "renameGlobals": true,
+            "numbersToExpressions": false,
+            "renameGlobals": false,
             "selfDefending": true,
             "simplify": true,
-            "splitStrings": true,
-            "splitStringsChunkLength": 10,
-            "stringArray": true,
-            "stringArrayEncoding": ["base64"],
-            "stringArrayThreshold": 0.75,
-            "transformObjectKeys": true,
-            "unicodeEscapeSequence": false
+            "splitStrings": false,
+            "stringArray": false,
+            "unicodeEscapeSequence": false,
+            "target": "browser"
           }
           EOF
           
-          echo "🛠️ 使用 javascript-obfuscator 进行混淆..."
+          echo "🛠️ 使用轻量级混淆配置..."
           javascript-obfuscator _worker.js --output _worker.js --config obfuscator-config.json
           
-          # 验证混淆后的文件
+          # 如果仍然太大，使用简单的压缩方法
           if [[ -f "_worker.js" ]]; then
             OBFUSCATED_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
-            echo "✅ 混淆完成，文件大小: $OBFUSCATED_SIZE 字节"
-            echo "::notice title=混淆完成::已生成混淆代码 ($OBFUSCATED_SIZE 字节)"
+            echo "📏 第一次处理后大小: $OBFUSCATED_SIZE 字节"
+            
+            # 如果文件仍然很大，使用简单的压缩
+            if [[ $OBFUSCATED_SIZE -gt 500000 ]]; then
+              echo "⚠️ 文件较大，使用简单压缩..."
+              # 移除注释和空白字符（简单版本）
+              node -e "
+                const fs = require('fs');
+                let code = fs.readFileSync('_worker.js', 'utf8');
+                // 移除单行注释
+                code = code.replace(/\\/\\/.*$/gm, '');
+                // 移除多行注释
+                code = code.replace(/\\/\\*[\\s\\S]*?\\*\\//g, '');
+                // 移除多余空白
+                code = code.replace(/\\s+/g, ' ').trim();
+                fs.writeFileSync('_worker.js', code);
+              "
+              echo "✅ 简单压缩完成"
+            fi
           else
-            echo "❌ 混淆失败，输出文件不存在"
+            echo "❌ 处理失败，输出文件不存在"
             exit 1
+          fi
+          
+          # 最终文件大小检查
+          FINAL_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
+          echo "✅ 最终文件大小: $FINAL_SIZE 字节"
+          
+          # 检查是否超过 Cloudflare Worker 限制（约1MB）
+          if [[ $FINAL_SIZE -gt 1048576 ]]; then
+            echo "❌ 警告：文件大小超过 1MB，可能影响部署"
+            echo "::warning title=文件大小警告::处理后的文件较大 ($FINAL_SIZE 字节)"
+          else
+            echo "✅ 文件大小在安全范围内"
           fi
           
           # 清理配置文件
@@ -193,19 +216,19 @@ jobs:
           git add -A
           
           # 提交更改
-          git commit -m "🔄 Auto Update Worker with Obfuscation
+          git commit -m "🔄 Auto Update Worker with Optimization
 
           • 下载原始文件保存为 source.js
-          • 生成混淆后的 _worker.js
+          • 生成优化后的 _worker.js
           • 源文件版本哈希: ${{ env.REMOTE_VERSION }}
-          • 混淆时间: $(date '+%Y-%m-%d %H:%M:%S')
+          • 处理时间: $(date '+%Y-%m-%d %H:%M:%S')
           
           📁 包含文件:
           - source.js (原始文件)
-          - _worker.js (混淆后文件)
+          - _worker.js (优化后文件)
           - version.txt (版本记录)
           
-          [自动同步和混淆]"
+          [自动同步和优化]"
           
           # 推送更改
           echo "🚀 推送更改到远程仓库..."
@@ -215,15 +238,15 @@ jobs:
       - name: 🎉 更新完成
         if: env.UPDATE_NEEDED == 'true'
         run: |
-          echo "🎉 $(date '+%Y-%m-%d %H:%M:%S') - 自动更新和混淆完成！"
-          echo "::notice title=更新完成::已成功同步并混淆代码"
+          echo "🎉 $(date '+%Y-%m-%d %H:%M:%S') - 自动更新和优化完成！"
+          echo "::notice title=更新完成::已成功同步并优化代码"
           echo "📋 更新摘要:"
           echo "   • 源文件版本: ${REMOTE_VERSION:0:16}..."
           SOURCE_SIZE=$(stat -c%s source.js 2>/dev/null || stat -f%z source.js 2>/dev/null)
-          OBFUSCATED_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
+          FINAL_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
           echo "   • source.js 大小: $SOURCE_SIZE 字节"
-          echo "   • _worker.js 大小: $OBFUSCATED_SIZE 字节"
-          echo "   • 混淆比例: $(( (OBFUSCATED_SIZE * 100) / SOURCE_SIZE ))%"
+          echo "   • _worker.js 大小: $FINAL_SIZE 字节"
+          echo "   • 压缩比例: $(( (FINAL_SIZE * 100) / SOURCE_SIZE ))%"
           echo "   • 处理时间: $(date '+%Y-%m-%d %H:%M:%S')"
 
       - name: 😴 无需更新
