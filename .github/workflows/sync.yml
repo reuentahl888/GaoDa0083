@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   update:
-    name: 🚀 同步和优化 Worker 文件
+    name: 🚀 同步和混淆 Worker 文件
     runs-on: ubuntu-latest
     steps:
       - name: 📥 初始化代码仓库
@@ -29,7 +29,7 @@ jobs:
           
           # 安装必要的工具
           echo "📦 安装代码处理工具..."
-          npm install -g terser
+          npm install -g javascript-obfuscator terser
 
       - name: 🔍 检查文件状态
         id: check_files
@@ -107,90 +107,67 @@ jobs:
           cp /tmp/remote_worker.js source.js
           echo "✅ source.js 保存成功"
 
-      - name: 🔧 轻量级优化（避免CPU超限）
+      - name: 🔒 使用推荐配置进行混淆
         if: env.UPDATE_NEEDED == 'true'
         run: |
-          echo "🔧 $(date '+%Y-%m-%d %H:%M:%S') - 开始轻量级优化..."
+          echo "🔒 $(date '+%Y-%m-%d %H:%M:%S') - 开始代码混淆..."
           
-          # 方法1: 仅使用 terser 进行基本压缩
-          echo "🛠️ 使用 terser 进行基本压缩..."
-          terser /tmp/remote_worker.js \
-            --compress defaults=false,unused=true,dead_code=true \
-            --mangle toplevel=false \
-            --output _worker.js
+          # 创建推荐的混淆配置
+          cat > obfuscator-config.json << 'EOF'
+          {
+            "compact": true,
+            "controlFlowFlattening": false,
+            "deadCodeInjection": false,
+            "debugProtection": false,
+            "identifierNamesGenerator": "mangled",
+            "numbersToExpressions": false,
+            "renameGlobals": false,
+            "selfDefending": true,
+            "simplify": true,
+            "splitStrings": false,
+            "stringArray": true,
+            "stringArrayEncoding": [],
+            "stringArrayThreshold": 0.75,
+            "unicodeEscapeSequence": false
+          }
+          EOF
           
-          # 检查压缩后文件
+          echo "🛠️ 使用推荐配置进行混淆..."
+          javascript-obfuscator /tmp/remote_worker.js --output _worker.js --config obfuscator-config.json
+          
+          # 检查混淆后文件大小
           if [[ -f "_worker.js" ]]; then
-            SIZE_1=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
-            echo "📏 基本压缩后大小: $SIZE_1 字节"
+            OBFUSCATED_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
+            ORIGINAL_SIZE=$(stat -c%s source.js 2>/dev/null || stat -f%z source.js 2>/dev/null)
             
-            # 如果文件仍然复杂，尝试进一步简化
-            if [[ $SIZE_1 -gt 300000 ]]; then
-              echo "⚡ 文件较大，进行额外优化..."
+            echo "📊 混淆报告:"
+            echo "   • 原始大小: $ORIGINAL_SIZE 字节"
+            echo "   • 混淆后大小: $OBFUSCATED_SIZE 字节"
+            echo "   • 大小变化: $(( (OBFUSCATED_SIZE * 100) / ORIGINAL_SIZE ))%"
+            
+            # 如果混淆后文件太大，使用 terser 压缩
+            if [[ $OBFUSCATED_SIZE -gt 500000 ]]; then
+              echo "⚠️ 混淆后文件较大，使用 terser 进一步压缩..."
+              terser _worker.js --compress --mangle --output _worker.js
               
-              # 使用独立的 Node.js 脚本进行简化
-              node -e "
-              const fs = require('fs');
-              const code = fs.readFileSync('/tmp/remote_worker.js', 'utf8');
-              
-              // 移除注释
-              let simplified = code.replace(/\\/\\*[\\s\\S]*?\\*\\//g, '');
-              simplified = simplified.replace(/\\/\\/.*\$/gm, '');
-              
-              // 移除空行和多余空格
-              simplified = simplified.split('\\n')
-                .filter(line => line.trim().length > 0)
-                .map(line => line.trim())
-                .join('\\n');
-              
-              fs.writeFileSync('_worker.js', simplified);
-              console.log('简化完成');
-              "
-              
-              SIZE_2=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
-              echo "📏 简化后大小: $SIZE_2 字节"
+              COMPRESSED_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
+              echo "✅ 二次压缩后大小: $COMPRESSED_SIZE 字节"
             fi
           else
-            echo "❌ 压缩失败，使用原始文件"
+            echo "❌ 混淆失败，使用原始文件"
             cp /tmp/remote_worker.js _worker.js
           fi
           
-          # 最终验证
+          # 清理配置文件
+          rm -f obfuscator-config.json
+          
+          # 最终大小检查
           FINAL_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
-          ORIGINAL_SIZE=$(stat -c%s source.js 2>/dev/null || stat -f%z source.js 2>/dev/null)
-          
-          echo "📊 优化报告:"
-          echo "   • 原始大小: $ORIGINAL_SIZE 字节"
-          echo "   • 优化后大小: $FINAL_SIZE 字节"
-          echo "   • 优化比例: $(( (FINAL_SIZE * 100) / ORIGINAL_SIZE ))%"
-          
-          if [[ $FINAL_SIZE -gt 500000 ]]; then
-            echo "⚠️ 警告：文件仍然较大，建议手动优化代码结构"
-          fi
-
-      - name: 🔍 代码复杂度检查
-        if: env.UPDATE_NEEDED == 'true'
-        run: |
-          echo "🔍 $(date '+%Y-%m-%d %H:%M:%S') - 检查代码复杂度..."
-          
-          if [[ -f "_worker.js" ]]; then
-            # 检查可能引起CPU超限的模式
-            COMPLEX_PATTERNS=0
-            COMPLEX_PATTERNS=$((COMPLEX_PATTERNS + $(grep -c "eval(" _worker.js || true)))
-            COMPLEX_PATTERNS=$((COMPLEX_PATTERNS + $(grep -c "setInterval" _worker.js || true)))
-            COMPLEX_PATTERNS=$((COMPLEX_PATTERNS + $(grep -c "setTimeout" _worker.js || true)))
-            COMPLEX_PATTERNS=$((COMPLEX_PATTERNS + $(grep -c "Function(" _worker.js || true)))
-            COMPLEX_PATTERNS=$((COMPLEX_PATTERNS + $(grep -c "while.*true" _worker.js || true)))
-            
-            echo "📋 复杂度检查:"
-            echo "   • 发现 $COMPLEX_PATTERNS 个可能引起CPU超限的模式"
-            
-            if [[ $COMPLEX_PATTERNS -gt 5 ]]; then
-              echo "❌ 警告：代码包含多个可能引起CPU超限的模式"
-              echo "::warning title=CPU超限风险::代码包含 $COMPLEX_PATTERNS 个高风险模式"
-            else
-              echo "✅ 代码复杂度在可接受范围内"
-            fi
+          if [[ $FINAL_SIZE -gt 1048576 ]]; then
+            echo "⚠️ 警告：最终文件超过 1MB，可能影响 Cloudflare Worker 部署"
+            echo "::warning title=文件大小警告::最终文件大小: $FINAL_SIZE 字节"
+          else
+            echo "✅ 文件大小在安全范围内"
           fi
 
       - name: 📝 提交更改
@@ -215,16 +192,16 @@ jobs:
           WORKER_SIZE=$(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null)
           
           # 提交
-          git commit -m "🔄 Auto Update Worker - CPU Optimized
+          git commit -m "🔄 Auto Update Worker with Obfuscation
 
           • 同步最新 Worker 文件
           • 版本: ${REMOTE_VERSION:0:16}...
           • 源文件: $SOURCE_SIZE 字节
-          • 优化后: $WORKER_SIZE 字节
-          • 针对CPU时间限制优化
+          • 混淆后: $WORKER_SIZE 字节
+          • 使用推荐混淆配置
           • 更新时间: $(date '+%Y-%m-%d %H:%M:%S')
           
-          [自动同步和优化]"
+          [自动同步和混淆]"
           
           git push
           echo "✅ 提交完成"
@@ -233,7 +210,11 @@ jobs:
         if: env.UPDATE_NEEDED == 'true'
         run: |
           echo "🎉 $(date '+%Y-%m-%d %H:%M:%S') - 自动更新完成！"
-          echo "::notice title=更新完成::已成功优化代码以避免CPU超限"
+          echo "::notice title=更新完成::已成功同步并混淆代码"
+          echo "📋 最终报告:"
+          echo "   • 源文件大小: $(stat -c%s source.js 2>/dev/null || stat -f%z source.js 2>/dev/null) 字节"
+          echo "   • 混淆文件大小: $(stat -c%s _worker.js 2>/dev/null || stat -f%z _worker.js 2>/dev/null) 字节"
+          echo "   • 版本哈希: ${REMOTE_VERSION:0:16}..."
 
       - name: 😴 无需更新
         if: env.UPDATE_NEEDED == 'false'
